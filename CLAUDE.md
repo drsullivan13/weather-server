@@ -1,111 +1,147 @@
----
-description: Use Bun instead of Node.js, npm, pnpm, or vite.
-globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
-alwaysApply: false
----
+# CLAUDE.md
 
-Default to using Bun instead of Node.js.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+This is an MCP (Model Context Protocol) server built with Bun that provides weather-related tools accessible via HTTP. The server uses the ATXP payment system to monetize tool calls, requiring micropayments in USDC for each operation.
+
+## Runtime & Build System
+
+**ALWAYS use Bun, never Node.js or npm.**
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`
 - Use `bun test` instead of `jest` or `vitest`
-- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
-- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
-- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
-- Bun automatically loads .env, so don't use dotenv.
+- Use `bun build` instead of `webpack` or `esbuild`
+- Use `bun install` instead of `npm install`
+- Use `bun run <script>` instead of `npm run <script>`
 
-## APIs
+**Bun automatically loads .env files** - never use or import the `dotenv` package.
 
-- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
-- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
-- `Bun.redis` for Redis. Don't use `ioredis`.
-- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
-- `WebSocket` is built-in. Don't use `ws`.
-- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
-- Bun.$`ls` instead of execa.
+### Available Scripts
 
-## Testing
+- `bun run dev` - Run the server in development mode with hot reload
+- `bun run build` - Build the server to `build/index.js` for production
+- `bun run start` - Run the built production server
+- `bun test` - Run tests
 
-Use `bun test` to run tests.
+## Architecture
 
-```ts#index.test.ts
-import { test, expect } from "bun:test";
+### MCP Server with Express + ATXP Payments
 
-test("hello world", () => {
-  expect(1).toBe(1);
+The server architecture combines three key components:
+
+1. **MCP Server (`@modelcontextprotocol/sdk`)**: Handles tool registration and MCP protocol communication
+2. **Express HTTP Server**: Provides the HTTP transport layer for MCP requests
+3. **ATXP Payment Middleware (`@atxp/express`)**: Intercepts requests to require micropayments before tool execution
+
+#### Request Flow
+
+```
+Client Request → Express (ATXP middleware) → MCP Transport → Tool Handler
+                     ↓ (payment required)
+                 ATXP Payment Flow
+```
+
+### Key Implementation Details
+
+#### Stateless HTTP Pattern
+
+The server creates a **new `StreamableHTTPServerTransport` for each request** to prevent JSON-RPC request ID collisions between different clients. This is the recommended pattern from the MCP SDK for stateless servers.
+
+```typescript
+app.post('/', async (req, res) => {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,  // stateless mode
+    enableJsonResponse: true
+  });
+
+  res.on('close', () => transport.close());
+
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
 });
 ```
 
-## Frontend
+#### ATXP Payment Integration
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+Tools require payment using the `requirePayment` function from `@atxp/express`. The ATXP middleware is configured at the Express app level and intercepts requests before they reach tool handlers.
 
-Server:
+Configuration requires:
+- `ATXP_CONNECTION` environment variable (connection URL with token)
+- `destination` account (where payments are sent)
+- `payeeName` (display name for the payment recipient)
 
-```ts#index.ts
-import index from "./index.html"
+### Tool Registration (MCP SDK)
 
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
+Use `server.registerTool()` with the following structure:
+
+```typescript
+server.registerTool(
+  "tool-name",
+  {
+    title: "Display Name",
+    description: "What the tool does",
+    inputSchema: {
+      param1: z.string(),
+      param2: z.number()
     },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
+    outputSchema: {
+      result: z.string()
     }
   },
-  development: {
-    hmr: true,
-    console: true,
+  async (params) => {
+    await requirePayment({ price: BigNumber(0.01) });
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(output) }],
+      structuredContent: output
+    };
   }
-})
+);
 ```
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+**Important**: Use Zod v3 syntax (not v4) as the MCP SDK depends on `zod@^3.23.8`.
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
+## TypeScript Configuration
+
+The tsconfig uses strict bundler mode settings:
+
+- `"verbatimModuleSyntax": true` - Requires explicit `type` imports for types (e.g., `import { type Request }`)
+- `"moduleResolution": "bundler"` - Optimized for bundler environments like Bun
+- `"noEmit": true` - TypeScript is only for type checking; Bun handles compilation
+- `"module": "Preserve"` - Preserves module syntax for Bun to handle
+
+When importing types from libraries, always use `type` keyword:
+```typescript
+import express, { type Request, type Response } from "express";
 ```
 
-With the following `frontend.tsx`:
+## Environment Variables
 
-```tsx#frontend.tsx
-import React from "react";
+Required:
+- `ATXP_CONNECTION` - ATXP payment system connection URL with token
+- `PORT` - (optional) Server port, defaults to 3000
 
-// import .css files directly and it works
-import './index.css';
+## Dependencies & Versions
 
-import { createRoot } from "react-dom/client";
+Critical dependency versions to maintain compatibility:
 
-const root = createRoot(document.body);
+- **Zod must be v3.x** (`^3.23.8`) - MCP SDK is incompatible with Zod v4
+- `@modelcontextprotocol/sdk` - For MCP server functionality
+- `@atxp/express` - Payment middleware integration
+- `bignumber.js` - For precise monetary calculations (USDC amounts)
 
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
+## Adding New Weather Tools
 
-root.render(<Frontend />);
-```
+1. Register the tool using `server.registerTool()` before the Express app setup
+2. Add `requirePayment()` call at the start of the tool handler
+3. Define input/output schemas using Zod v3 syntax
+4. Return both `content` (text) and `structuredContent` (typed object)
 
-Then, run index.ts
+## Common Issues
 
-```sh
-bun --hot ./index.ts
-```
-
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+- **Type errors on line imports**: Ensure you're using `import { type X }` for type-only imports
+- **Zod schema errors**: Verify you're using Zod v3 (not v4) - check `package.json`
+- **ATXP_CONNECTION missing**: Create `.env` file with the connection URL (Bun loads automatically)
+- **Tool deprecation warnings**: Use `registerTool()`, not the deprecated `tool()` method
