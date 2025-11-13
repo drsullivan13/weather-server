@@ -1,0 +1,36 @@
+{
+  "name": "weather-server",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun build src/index.ts --outfile=build/index.js --target=bun && chmod 755 build/index.js",
+    "start": "bun build/index.js",
+    "dev": "bun --hot src/index.ts",
+    "test": "bun test"
+  },
+  "files": [ 
+        "build"
+    ],
+  "bin": { 
+        "atxp-math-server": "build/index.js"
+    }, 
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@atxp/express": "^0.8.2",
+    "@atxp/server": "^0.8.2",
+    "@modelcontextprotocol/sdk": "^1.21.1",
+    "@supabase/supabase-js": "^2.81.1",
+    "bignumber": "^1.1.0",
+    "express": "^5.1.0",
+    "tsx": "^4.20.6",
+    "zod": "^3.23.8"
+  }
+}
